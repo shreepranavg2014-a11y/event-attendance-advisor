@@ -1,0 +1,4 @@
+student_registered_for_event,food_provided,certificate_offered,is_exam_period,event_category,student_dept,attendance
+1,1,0,0,Technical,AI_DS,1
+0,0,0,1,Cultural,Commerce,0
+1,0,1,0,Career,CS,1
