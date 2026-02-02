@@ -1,1 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.DS_Store
 
+models/*.joblib
+models/*.pkl
+data/*.csv
+!data/training.csv
