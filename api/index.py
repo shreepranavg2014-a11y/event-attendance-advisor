@@ -1,69 +1,62 @@
-from fastapi import FastAPI
-from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
-import os
-import joblib
+import pandas as pd
 
-app = FastAPI(title="Student Attendance Event Prediction API", version="0.1.0")
+STUDENTS_CSV = os.path.join(os.path.dirname(__file__), "..", "data", "students_master.csv")
 
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "model.joblib")
+_students_df = None
+def load_students():
+    global _students_df
+    if _students_df is None and os.path.exists(STUDENTS_CSV):
+        _students_df = pd.read_csv(STUDENTS_CSV)
+        _students_df["student_id"] = _students_df["student_id"].astype(str)
+    return _students_df
 
-class PredictRequest(BaseModel):
-    student_id: str = Field(..., examples=["STU_001234"])
-    event_id: str = Field(..., examples=["EVT_2026_0001"])
-    features: Dict[str, Any] = Field(default_factory=dict)
-
-class PredictResponse(BaseModel):
-    student_id: str
-    event_id: str
-    attendance_probability: float
-    model_version: str = "mvp-heuristic"
-
-_model = None
-
-def load_model():
-    global _model
-    if _model is None and os.path.exists(MODEL_PATH):
-        _model = joblib.load(MODEL_PATH)
-    return _model
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+def sigmoid(z: float) -> float:
+    import math
+    return 1.0 / (1.0 + math.exp(-z))
 
 @app.post("/predict/attendance", response_model=PredictResponse)
 def predict_attendance(req: PredictRequest):
     model = load_model()
 
-    # MVP fallback: if no trained model is present, use a simple heuristic.
-    if model is None:
-        # Example heuristic knobs (safe defaults)
-        registered = bool(req.features.get("student_registered_for_event", False))
-        food = bool(req.features.get("food_provided", False))
-        certificate = bool(req.features.get("certificate_offered", False))
-        exam = bool(req.features.get("is_exam_period", False))
-
-        p = 0.35
-        p += 0.25 if registered else 0.0
-        p += 0.10 if food else 0.0
-        p += 0.10 if certificate else 0.0
-        p -= 0.20 if exam else 0.0
-        p = max(0.01, min(0.99, p))
-
+    # If trained model exists, use it
+    if model is not None:
+        X = [req.features]
+        proba = float(model.predict_proba(X)[0][1])
         return PredictResponse(
             student_id=req.student_id,
             event_id=req.event_id,
-            attendance_probability=float(p),
-            model_version="mvp-heuristic",
+            attendance_probability=proba,
+            model_version="sklearn-pipeline-v1",
         )
 
-    # If model exists, it should be a sklearn Pipeline with predict_proba.
-    X = [req.features]
-    proba = float(model.predict_proba(X)[0][1])
+    # Rule-based MVP using your data
+    students = load_students()
+    att = None
+    if students is not None:
+        row = students[students["student_id"] == str(req.student_id)]
+        if len(row) > 0:
+            att = float(row.iloc[0].get("course_attendance_rate", 0.0))
+
+    # Inputs you can pass from frontend
+    has_conflict = bool(req.features.get("has_timetable_conflict", False))
+    is_exam = bool(req.features.get("is_exam_period", False))
+    registered = bool(req.features.get("student_registered_for_event", False))
+
+    # Convert attendance % (0..100) into a 0..1 signal
+    att_sig = 0.0 if att is None else max(0.0, min(1.0, att / 100.0))
+
+    # Simple scoring -> probability
+    z = -0.3
+    z += 1.2 * att_sig
+    z += 0.8 if registered else 0.0
+    z -= 1.0 if has_conflict else 0.0
+    z -= 0.6 if is_exam else 0.0
+
+    p = max(0.01, min(0.99, sigmoid(z)))
+
     return PredictResponse(
         student_id=req.student_id,
         event_id=req.event_id,
-        attendance_probability=proba,
-        model_version="sklearn-pipeline-v1",
+        attendance_probability=float(p),
+        model_version="mvp-attendance+timetable",
     )
-
